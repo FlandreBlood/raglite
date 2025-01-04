@@ -22,18 +22,20 @@ def _create_chunk_records(
     chunk_embeddings: list[FloatMatrix],
     config: RAGLiteConfig,
 ) -> tuple[list[Chunk], list[list[ChunkEmbedding]]]:
-    """Create chunk and chunk embedding records from chunks and their embeddings."""
+    """从块和它们的嵌入创建块和块嵌入记录。"""
     chunk_records = []
     chunk_embedding_records = []
     
     for i, (chunk, embeddings) in enumerate(zip(chunks, chunk_embeddings)):
-        # 解析heading和body
+        # 解析标题和正文
         if "\n\n" in chunk:
             heading, body = chunk.split("\n\n", 1)
+            # 去掉标题中的#号和斜杠
+            heading = heading.replace("#", "").replace("\\", "")
         else:
             heading, body = "", chunk
         
-        # 创建chunk记录
+        # 创建块记录
         chunk_record = Chunk.from_body(
             document_id=document_id,
             index=i,
@@ -42,7 +44,7 @@ def _create_chunk_records(
         )
         chunk_records.append(chunk_record)
         
-        # 创建chunk embedding记录
+        # 创建块嵌入记录
         chunk_embedding_record_list = [
             ChunkEmbedding(chunk_id=chunk_record.id, embedding=embedding)
             for embedding in embeddings
@@ -52,25 +54,25 @@ def _create_chunk_records(
     return chunk_records, chunk_embedding_records
 
 def insert_document(doc_path: Path, *, config: RAGLiteConfig | None = None) -> None:  # noqa: PLR0915
-    """Insert a document into the database and update the index."""
-    # Use the default config if not provided.
+    """将文档插入数据库并更新索引。"""
+    # 如果没有提供配置，则使用默认配置。
     config = config or RAGLiteConfig()
     db_backend = make_url(config.db_url).get_backend_name()
-    # Preprocess the document into chunks and chunk embeddings.
+    # 将文档预处理为块和块嵌入。
     with tqdm(total=5, unit="step", dynamic_ncols=True) as pbar:
-        pbar.set_description("Initializing database")
+        pbar.set_description("初始化数据库")
         engine = create_database_engine(config)
         pbar.update(1)
-        pbar.set_description("Converting to Markdown")
+        pbar.set_description("转换为Markdown")
         doc = document_to_markdown(doc_path)
         pbar.update(1)
-        pbar.set_description("Splitting sentences")
+        pbar.set_description("分割句子")
         sentences = split_sentences(doc, max_len=config.chunk_max_size)
         pbar.update(1)
-        pbar.set_description("Embedding sentences")
+        pbar.set_description("Embedding句子")
         sentence_embeddings = embed_sentences(sentences, config=config)
         pbar.update(1)
-        pbar.set_description("Splitting chunks")
+        pbar.set_description("分割块")
         chunks, chunk_embeddings = split_chunks(
             sentences=sentences,
             sentence_embeddings=sentence_embeddings,
@@ -78,23 +80,23 @@ def insert_document(doc_path: Path, *, config: RAGLiteConfig | None = None) -> N
             max_size=config.chunk_max_size,
         )
         pbar.update(1)
-    # Create and store the chunk records.
+    # 创建并存储块记录。
     with Session(engine) as session:
-        # Add the document to the document table.
+        # 将文档添加到文档表中。
         document_record = Document.from_path(doc_path)
         if session.get(Document, document_record.id) is None:
             session.add(document_record)
             session.commit()
-        # Create the chunk records to insert into the chunk table.
+        # 创建要插入到块表中的块记录。
         chunk_records, chunk_embedding_records = _create_chunk_records(
             document_record.id, chunks, chunk_embeddings, config
         )
-        # Store the chunk and chunk embedding records.
+        # 存储块和块嵌入记录。
         for chunk_record, chunk_embedding_record_list in tqdm(
             zip(chunk_records, chunk_embedding_records, strict=True),
-            desc="Inserting chunks",
+            desc="插入块",
             total=len(chunk_records),
-            unit="chunk",
+            unit="块",
             dynamic_ncols=True,
             
         ):
@@ -103,45 +105,45 @@ def insert_document(doc_path: Path, *, config: RAGLiteConfig | None = None) -> N
             session.add(chunk_record)
             session.add_all(chunk_embedding_record_list)
             session.commit()
-    # Manually update the vector search chunk index for SQLite.
+    # 手动更新SQLite的向量搜索块索引。
     if db_backend == "sqlite":
         from pynndescent import NNDescent
 
         with Session(engine) as session:
-            # Get the vector search chunk index from the database, or create a new one.
+            # 从数据库获取向量搜索块索引，或创建一个新的。
             index_metadata = session.get(IndexMetadata, "default") or IndexMetadata(id="default")
             chunk_ids = index_metadata.metadata_.get("chunk_ids", [])
             chunk_sizes = index_metadata.metadata_.get("chunk_sizes", [])
-            # Get the unindexed chunks.
+            # 获取未索引的块。
             unindexed_chunks = list(session.exec(select(Chunk).offset(len(chunk_ids))).all())
             if not unindexed_chunks:
                 return
-            # Assemble the unindexed chunk embeddings into a NumPy array.
+            # 将未索引的块嵌入组装成一个NumPy数组。
             unindexed_chunk_embeddings = [chunk.embedding_matrix for chunk in unindexed_chunks]
             X = np.vstack(unindexed_chunk_embeddings)  # noqa: N806
-            # Index the unindexed chunks.
+            # 索引未索引的块。
             with tqdm(
                 total=len(unindexed_chunks),
-                desc="Indexing chunks",
-                unit="chunk",
+                desc="索引块",
+                unit="块",
                 dynamic_ncols=True,
             ) as pbar:
-                # Fit or update the ANN index.
+                # 拟合或更新ANN索引。
                 if len(chunk_ids) == 0:
                     nndescent = NNDescent(X, metric=config.vector_search_index_metric)
                 else:
                     nndescent = index_metadata.metadata_["index"]
                     nndescent.update(X)
-                # Prepare the ANN index so it can to handle query vectors not in the training set.
+                # 准备ANN索引，以便能够处理不在训练集中的查询向量。
                 nndescent.prepare()
-                # Update the index metadata and mark it as dirty by recreating the dictionary.
+                # 更新索引元数据，并通过重新创建字典将其标记为脏。
                 index_metadata.metadata_ = {
                     **index_metadata.metadata_,
                     "index": nndescent,
                     "chunk_ids": chunk_ids + [c.id for c in unindexed_chunks],
                     "chunk_sizes": chunk_sizes + [len(em) for em in unindexed_chunk_embeddings],
                 }
-                # Store the updated vector search chunk index.
+                # 存储更新后的向量搜索块索引。
                 session.add(index_metadata)
                 session.commit()
                 pbar.update(len(unindexed_chunks))
