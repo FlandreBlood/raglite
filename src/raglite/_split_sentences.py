@@ -25,25 +25,21 @@ def _mark_additional_sentence_boundaries(doc: spacy.tokens.Doc) -> spacy.tokens.
                 start_line, end_line = token.map  # type: ignore[misc]
                 heading_start = char_idx[start_line]
                 heading_end = char_idx[end_line]
-                headings.append((heading_start, heading_end + 1))
+                headings.append((heading_start, heading_end))
         return headings
 
     headings = get_markdown_heading_indexes(doc.text)
     for heading_start, heading_end in headings:
-        # Extract this heading's tokens.
-        heading_tokens = []
+        # Mark the start of a heading as a new sentence.
         for token in doc:
-            if heading_start <= token.idx < heading_end:
-                heading_tokens.append(token)  # Include the tokens strictly part of the heading.
-            elif heading_tokens:
-                heading_tokens.append(token)  # Include the first token after the heading.
+            if heading_start <= token.idx:
+                token.is_sent_start = True
                 break
-        # Mark the start of the heading as a new sentence, the heading body as not containing
-        # sentence boundaries, and the first token after the heading as a new sentence.
-        heading_tokens[0].is_sent_start = True
-        heading_tokens[-1].is_sent_start = True
-        for token in heading_tokens[1:-1]:
-            token.is_sent_start = False
+        # Mark the end of a heading as a new sentence.
+        for token in doc:
+            if heading_end <= token.idx:
+                token.is_sent_start = True
+                break
     return doc
 
 
@@ -56,7 +52,7 @@ def split_sentences(doc: str, max_len: int | None = None) -> list[str]:
         error_message = "Please install `xx_sent_ud_sm` with `pip install https://github.com/explosion/spacy-models/releases/download/xx_sent_ud_sm-3.7.0/xx_sent_ud_sm-3.7.0-py3-none-any.whl`."
         raise ImportError(error_message) from error
     nlp.add_pipe("_mark_additional_sentence_boundaries", before="senter")
-    sentences = [sent.text_with_ws for sent in nlp(doc).sents if sent.text.strip()]
+    sentences = [sent.text.replace(" ", "").replace("\u3000", "") for sent in nlp(doc).sents if sent.text.strip()]
     # Apply additional splits on paragraphs and sentences because spaCy's splitting is not perfect.
     if max_len is not None:
         for pattern in (r"(?<=\n\n)", r"(?<=\.\s)"):

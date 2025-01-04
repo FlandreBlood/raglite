@@ -155,6 +155,9 @@ def _embed_sentences_with_windowing(
             embeddings = np.asarray([np.mean(row, axis=0) for row in embedder.embed(string_batch)])
         else:
             # Use LiteLLM's API to embed the batch of strings.
+            # 处理掉换行符
+            import re
+            string_batch = [sentence.replace('\n', ' ').replace('</br>', ' ').strip() for sentence in string_batch]
             response = embedding(config.embedder, string_batch)
             embeddings = np.asarray([item["embedding"] for item in response["data"]])
         # Normalise the embeddings to unit norm and cast to half precision.

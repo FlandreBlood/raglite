@@ -22,48 +22,34 @@ def _create_chunk_records(
     chunk_embeddings: list[FloatMatrix],
     config: RAGLiteConfig,
 ) -> tuple[list[Chunk], list[list[ChunkEmbedding]]]:
-    """Process chunks into chunk and chunk embedding records."""
-    # Create the chunk records.
-    chunk_records, headings = [], ""
-    for i, chunk in enumerate(chunks):
-        # Create and append the chunk record.
-        record = Chunk.from_body(document_id=document_id, index=i, body=chunk, headings=headings)
-        chunk_records.append(record)
-        # Update the Markdown headings with those of this chunk.
-        headings = record.extract_headings()
-    # Create the chunk embedding records.
+    """Create chunk and chunk embedding records from chunks and their embeddings."""
+    chunk_records = []
     chunk_embedding_records = []
-    if sentence_embedding_type(config=config) == "late_chunking":
-        # Every chunk record is associated with a list of chunk embedding records, one for each of
-        # the sentences in the chunk.
-        for chunk_record, chunk_embedding in zip(chunk_records, chunk_embeddings, strict=True):
-            chunk_embedding_records.append(
-                [
-                    ChunkEmbedding(chunk_id=chunk_record.id, embedding=sentence_embedding)
-                    for sentence_embedding in chunk_embedding
-                ]
-            )
-    else:
-        # Embed the full chunks, including the current Markdown headings.
-        full_chunk_embeddings = embed_sentences([str(chunk) for chunk in chunks], config=config)
-        # Every chunk record is associated with a list of chunk embedding records. The chunk
-        # embedding records each correspond to a linear combination of a sentence embedding and an
-        # embedding of the full chunk with Markdown headings.
-        α = 0.382  # Golden ratio.  # noqa: PLC2401
-        for chunk_record, chunk_embedding, full_chunk_embedding in zip(
-            chunk_records, chunk_embeddings, full_chunk_embeddings, strict=True
-        ):
-            chunk_embedding_records.append(
-                [
-                    ChunkEmbedding(
-                        chunk_id=chunk_record.id,
-                        embedding=α * sentence_embedding + (1 - α) * full_chunk_embedding,
-                    )
-                    for sentence_embedding in chunk_embedding
-                ]
-            )
+    
+    for i, (chunk, embeddings) in enumerate(zip(chunks, chunk_embeddings)):
+        # 解析heading和body
+        if "\n\n" in chunk:
+            heading, body = chunk.split("\n\n", 1)
+        else:
+            heading, body = "", chunk
+        
+        # 创建chunk记录
+        chunk_record = Chunk.from_body(
+            document_id=document_id,
+            index=i,
+            headings=heading,
+            body=body,
+        )
+        chunk_records.append(chunk_record)
+        
+        # 创建chunk embedding记录
+        chunk_embedding_record_list = [
+            ChunkEmbedding(chunk_id=chunk_record.id, embedding=embedding)
+            for embedding in embeddings
+        ]
+        chunk_embedding_records.append(chunk_embedding_record_list)
+    
     return chunk_records, chunk_embedding_records
-
 
 def insert_document(doc_path: Path, *, config: RAGLiteConfig | None = None) -> None:  # noqa: PLR0915
     """Insert a document into the database and update the index."""
@@ -110,6 +96,7 @@ def insert_document(doc_path: Path, *, config: RAGLiteConfig | None = None) -> N
             total=len(chunk_records),
             unit="chunk",
             dynamic_ncols=True,
+            
         ):
             if session.get(Chunk, chunk_record.id) is not None:
                 continue
